@@ -80,3 +80,23 @@ export interface AirdropBatch {
   l2: AirdropRecipient[];
   l3: AirdropRecipient[];
 }
+
+// NFT Campaign
+export interface NftCampaign {
+  id: string;
+  name: string;
+  description: string;
+  image: string;
+  attributes: { trait_type: string; value: string }[];
+  recipients: string[];
+  status: "pending" | "processing" | "completed" | "failed";
+  batches: {
+    index: number;
+    status: "pending" | "broadcast" | "confirmed" | "failed";
+    recipientCount: number;
+    txId?: string;
+  }[];
+  contractAddress: string | null;
+  createdAt: number;
+  updatedAt: number;
+}

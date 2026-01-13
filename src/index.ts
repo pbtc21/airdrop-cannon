@@ -1,5 +1,5 @@
 /**
- * Airdrop Cannon - Mass token distribution as a service
+ * Airdrop Cannon - Mass token/NFT distribution as a service
  *
  * Pay with x402, distribute to thousands of addresses in batched transactions.
  * Based on Bitcoin Faces' record-breaking Stacks airdrop approach.
@@ -10,7 +10,7 @@
 
 import { Hono } from "hono";
 import { cors } from "hono/cors";
-import type { Env, QuoteRequest, QuoteResponse, ExecuteRequest, AirdropJob } from "./types";
+import type { Env, QuoteRequest, QuoteResponse, ExecuteRequest, AirdropJob, NftCampaign } from "./types";
 
 // Bitcoin Faces proven batch sizes
 const L1_MAX = 5000;
@@ -26,34 +26,52 @@ app.use("*", cors());
 app.get("/", (c) => {
   return c.json({
     name: "Airdrop Cannon",
-    description: "Mass token distribution as a service. Pay once, reach thousands.",
-    version: "1.0.0",
+    description: "Mass token & NFT distribution as a service. Pay once, reach thousands.",
+    version: "2.0.0",
     endpoints: {
-      "GET /": "API info",
-      "POST /quote": "Get pricing for an airdrop",
-      "POST /execute": "Execute an airdrop (requires x402 payment)",
+      // STX Airdrops
+      "POST /quote": "Get pricing for STX airdrop",
+      "POST /execute": "Execute STX airdrop",
       "GET /job/:id": "Check job status",
+      // NFT Airdrops
+      "POST /nft/create": "Create NFT airdrop campaign",
+      "POST /nft/quote": "Get pricing for NFT airdrop",
+      "POST /nft/execute": "Execute NFT airdrop",
+      "GET /nft/campaign/:id": "Get campaign details",
+      "GET /nft/metadata/:campaignId/:tokenId": "NFT metadata endpoint",
+      // General
       "GET /stats": "Platform statistics",
     },
     pricing: {
-      perRecipient: "10 µSTX",
+      stx: {
+        perRecipient: "10 µSTX",
+        perBatch: "~50,000 µSTX tx fee",
+      },
+      nft: {
+        perRecipient: "100 µSTX",
+        contractDeploy: "~100,000 µSTX",
+        perBatch: "~50,000 µSTX tx fee",
+      },
+    },
+    technical: {
+      batchStructure: "3 lists per tx: 5000 + 5000 + 4995 = 14,995 recipients",
+      contracts: {
+        stx: "SP3N0NQ47ABAZV68PQSJY7V2H4F2J709ATTESYBRD.send-many-v1",
+        nft: "Deploy per campaign using nft-airdrop.clar template",
+      },
+      inspiration: "https://github.com/bitcoinfaces/airdrop",
+    },
+    limits: {
       minRecipients: 10,
       maxRecipients: 1000000,
       maxBatchSize: MAX_BATCH_SIZE,
     },
-    technical: {
-      batchStructure: "3 lists per tx: 5000 + 5000 + 4995 = 14,995 recipients",
-      contract: "send-many.clar using fold pattern",
-      inspiration: "https://github.com/bitcoinfaces/airdrop",
-    },
-    supported: {
-      tokens: ["STX"],
-      networks: ["mainnet", "testnet"],
-    },
   });
 });
 
-// Quote endpoint - calculate cost for an airdrop
+// ============ STX AIRDROP ENDPOINTS ============
+
+// Quote endpoint - calculate cost for STX airdrop
 app.post("/quote", async (c) => {
   const body = await c.req.json<QuoteRequest>();
   const { recipientCount, tokenType } = body;
@@ -67,23 +85,15 @@ app.post("/quote", async (c) => {
   }
 
   if (tokenType !== "stx") {
-    return c.json({ error: "Only STX airdrops supported currently" }, 400);
+    return c.json({ error: "Use /nft/quote for NFT airdrops" }, 400);
   }
 
-  const pricePerRecipient = parseInt(c.env.PRICE_PER_RECIPIENT || "10"); // µSTX
+  const pricePerRecipient = parseInt(c.env.PRICE_PER_RECIPIENT || "10");
   const batchCount = Math.ceil(recipientCount / MAX_BATCH_SIZE);
-
-  // Estimate tx fees: ~0.05 STX per batch tx (larger txs need more fees)
   const estimatedFeesµSTX = batchCount * 50000;
-
-  // Service fee
   const serviceFeeµSTX = recipientCount * pricePerRecipient;
-
-  // Total
   const totalµSTX = estimatedFeesµSTX + serviceFeeµSTX;
-
-  // Convert to STX
-  const stxPrice = 1.5; // Approximate USD per STX
+  const stxPrice = 1.5;
 
   const quote: QuoteResponse = {
     recipientCount,
@@ -113,39 +123,28 @@ app.post("/quote", async (c) => {
 });
 
 // Split recipients into batches with 3-list structure
-function splitIntoBatches(recipients: { address: string; amount: string }[]): {
-  l1: { address: string; amount: string }[];
-  l2: { address: string; amount: string }[];
-  l3: { address: string; amount: string }[];
-}[] {
-  const batches: {
-    l1: { address: string; amount: string }[];
-    l2: { address: string; amount: string }[];
-    l3: { address: string; amount: string }[];
-  }[] = [];
-
+function splitIntoBatches<T>(recipients: T[]): { l1: T[]; l2: T[]; l3: T[] }[] {
+  const batches: { l1: T[]; l2: T[]; l3: T[] }[] = [];
   let remaining = [...recipients];
 
   while (remaining.length > 0) {
-    const batch = {
+    batches.push({
       l1: remaining.splice(0, L1_MAX),
       l2: remaining.splice(0, L2_MAX),
       l3: remaining.splice(0, L3_MAX),
-    };
-    batches.push(batch);
+    });
   }
 
   return batches;
 }
 
-// Execute airdrop - accepts recipient list and payment
+// Execute STX airdrop
 app.post("/execute", async (c) => {
   const body = await c.req.json<ExecuteRequest>();
-  const { tokenType, recipients, memo } = body;
+  const { tokenType, recipients } = body;
 
-  // Validate
   if (tokenType !== "stx") {
-    return c.json({ error: "Only STX airdrops supported currently" }, 400);
+    return c.json({ error: "Use /nft/execute for NFT airdrops" }, 400);
   }
 
   if (!recipients || !Array.isArray(recipients) || recipients.length < 10) {
@@ -156,7 +155,6 @@ app.post("/execute", async (c) => {
     return c.json({ error: "Maximum 1,000,000 recipients per job" }, 400);
   }
 
-  // Validate each recipient
   for (const r of recipients) {
     if (!r.address || (!r.address.startsWith("SP") && !r.address.startsWith("ST"))) {
       return c.json({ error: `Invalid address: ${r.address}` }, 400);
@@ -166,18 +164,13 @@ app.post("/execute", async (c) => {
     }
   }
 
-  // Calculate total
   const totalAmount = recipients.reduce((sum, r) => sum + BigInt(r.amount), 0n);
-
-  // Split into batches
   const batches = splitIntoBatches(recipients);
-
-  // Create job
   const jobId = crypto.randomUUID();
 
   const job: AirdropJob = {
     id: jobId,
-    owner: "", // Set from x402 payment
+    owner: "",
     tokenType,
     recipients,
     totalAmount: totalAmount.toString(),
@@ -194,10 +187,8 @@ app.post("/execute", async (c) => {
     updatedAt: Date.now(),
   };
 
-  // Store job
   await c.env.JOBS.put(`job:${jobId}`, JSON.stringify(job));
 
-  // Calculate fees
   const pricePerRecipient = parseInt(c.env.PRICE_PER_RECIPIENT || "10");
   const serviceFee = recipients.length * pricePerRecipient;
   const estimatedFees = batches.length * 50000;
@@ -205,42 +196,20 @@ app.post("/execute", async (c) => {
   return c.json({
     jobId,
     status: "pending",
+    type: "stx",
     summary: {
       recipients: recipients.length,
       batches: batches.length,
       totalAmount: totalAmount.toString(),
       totalAmountSTX: (Number(totalAmount) / 1000000).toFixed(6),
     },
-    batchBreakdown: batches.map((batch, i) => ({
-      batch: i + 1,
-      l1: batch.l1.length,
-      l2: batch.l2.length,
-      l3: batch.l3.length,
-      total: batch.l1.length + batch.l2.length + batch.l3.length,
-    })),
     payment: {
-      required: true,
-      serviceFee: {
-        amount: serviceFee,
-        amountSTX: (serviceFee / 1000000).toFixed(6),
-        token: "STX",
-      },
-      estimatedTxFees: {
-        amount: estimatedFees,
-        amountSTX: (estimatedFees / 1000000).toFixed(6),
-        token: "STX",
-      },
-      totalRequired: {
-        serviceFee: (serviceFee / 1000000).toFixed(6),
-        txFees: (estimatedFees / 1000000).toFixed(6),
-        distribution: (Number(totalAmount) / 1000000).toFixed(6),
-        grandTotal: ((serviceFee + estimatedFees + Number(totalAmount)) / 1000000).toFixed(6),
-      },
+      serviceFee: (serviceFee / 1000000).toFixed(6) + " STX",
+      txFees: (estimatedFees / 1000000).toFixed(6) + " STX",
+      distribution: (Number(totalAmount) / 1000000).toFixed(6) + " STX",
     },
-    next: {
-      checkStatus: `/job/${jobId}`,
-      documentation: "https://github.com/bitcoinfaces/airdrop",
-    },
+    contract: "SP3N0NQ47ABAZV68PQSJY7V2H4F2J709ATTESYBRD.send-many-v1",
+    next: `/job/${jobId}`,
   });
 });
 
@@ -254,7 +223,6 @@ app.get("/job/:id", async (c) => {
   }
 
   const job: AirdropJob = JSON.parse(jobData);
-
   const completed = job.batches.filter((b) => b.status === "confirmed").length;
   const failed = job.batches.filter((b) => b.status === "failed").length;
 
@@ -264,17 +232,7 @@ app.get("/job/:id", async (c) => {
     tokenType: job.tokenType,
     recipients: job.recipients.length,
     totalAmount: job.totalAmount,
-    totalAmountSTX: (Number(job.totalAmount) / 1000000).toFixed(6),
-    batches: job.batches.map((b) => ({
-      index: b.index,
-      status: b.status,
-      txId: b.txId,
-      recipientCount: b.recipientCount,
-      l1Count: b.l1Count,
-      l2Count: b.l2Count,
-      l3Count: b.l3Count,
-      error: b.error,
-    })),
+    batches: job.batches,
     progress: {
       completed,
       failed,
@@ -287,17 +245,245 @@ app.get("/job/:id", async (c) => {
   });
 });
 
+// ============ NFT AIRDROP ENDPOINTS ============
+
+// Create NFT campaign
+app.post("/nft/create", async (c) => {
+  const body = await c.req.json<{
+    name: string;
+    description: string;
+    image: string; // URL to the image
+    recipients: string[]; // Array of Stacks addresses
+    attributes?: { trait_type: string; value: string }[];
+  }>();
+
+  const { name, description, image, recipients, attributes } = body;
+
+  if (!name || !description || !image) {
+    return c.json({ error: "name, description, and image are required" }, 400);
+  }
+
+  if (!recipients || !Array.isArray(recipients) || recipients.length < 10) {
+    return c.json({ error: "Minimum 10 recipients required" }, 400);
+  }
+
+  if (recipients.length > 1000000) {
+    return c.json({ error: "Maximum 1,000,000 recipients per campaign" }, 400);
+  }
+
+  // Validate addresses
+  for (const addr of recipients) {
+    if (!addr.startsWith("SP") && !addr.startsWith("ST")) {
+      return c.json({ error: `Invalid address: ${addr}` }, 400);
+    }
+  }
+
+  const campaignId = crypto.randomUUID().slice(0, 8);
+  const batches = splitIntoBatches(recipients);
+
+  const campaign: NftCampaign = {
+    id: campaignId,
+    name,
+    description,
+    image,
+    attributes: attributes || [],
+    recipients,
+    status: "pending",
+    batches: batches.map((batch, i) => ({
+      index: i,
+      status: "pending" as const,
+      recipientCount: batch.l1.length + batch.l2.length + batch.l3.length,
+    })),
+    contractAddress: null,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  };
+
+  await c.env.JOBS.put(`nft:${campaignId}`, JSON.stringify(campaign));
+
+  // Calculate pricing
+  const pricePerRecipient = 100; // µSTX per NFT
+  const deployFee = 100000; // Contract deployment
+  const batchFees = batches.length * 50000;
+  const serviceFee = recipients.length * pricePerRecipient;
+  const totalFees = deployFee + batchFees + serviceFee;
+
+  return c.json({
+    campaignId,
+    status: "pending",
+    name,
+    image,
+    recipients: recipients.length,
+    batches: batches.length,
+    metadata: {
+      endpoint: `https://airdrop-cannon.p-d07.workers.dev/nft/metadata/${campaignId}/{tokenId}`,
+      description: "Use this URL as your NFT baseUri",
+    },
+    pricing: {
+      deployFee: (deployFee / 1000000).toFixed(6) + " STX",
+      serviceFee: (serviceFee / 1000000).toFixed(6) + " STX",
+      batchFees: (batchFees / 1000000).toFixed(6) + " STX",
+      total: (totalFees / 1000000).toFixed(6) + " STX",
+    },
+    next: {
+      quote: `/nft/quote?campaignId=${campaignId}`,
+      execute: `/nft/execute`,
+      metadata: `/nft/metadata/${campaignId}/1`,
+    },
+  });
+});
+
+// NFT Quote
+app.post("/nft/quote", async (c) => {
+  const body = await c.req.json<{ recipientCount: number }>();
+  const { recipientCount } = body;
+
+  if (!recipientCount || recipientCount < 10) {
+    return c.json({ error: "Minimum 10 recipients required" }, 400);
+  }
+
+  const batchCount = Math.ceil(recipientCount / MAX_BATCH_SIZE);
+  const deployFee = 100000;
+  const batchFees = batchCount * 50000;
+  const serviceFee = recipientCount * 100;
+  const totalFees = deployFee + batchFees + serviceFee;
+  const stxPrice = 1.5;
+
+  return c.json({
+    type: "nft",
+    recipientCount,
+    batchCount,
+    recipientsPerBatch: MAX_BATCH_SIZE,
+    pricing: {
+      deployFee: {
+        stx: (deployFee / 1000000).toFixed(6),
+        description: "Contract deployment",
+      },
+      serviceFee: {
+        stx: (serviceFee / 1000000).toFixed(6),
+        description: `${recipientCount} NFTs @ 100 µSTX each`,
+      },
+      batchFees: {
+        stx: (batchFees / 1000000).toFixed(6),
+        description: `${batchCount} batches @ 50,000 µSTX each`,
+      },
+      total: {
+        stx: (totalFees / 1000000).toFixed(6),
+        usd: ((totalFees / 1000000) * stxPrice).toFixed(2),
+      },
+    },
+  });
+});
+
+// Execute NFT airdrop
+app.post("/nft/execute", async (c) => {
+  const body = await c.req.json<{ campaignId: string }>();
+  const { campaignId } = body;
+
+  const campaignData = await c.env.JOBS.get(`nft:${campaignId}`);
+  if (!campaignData) {
+    return c.json({ error: "Campaign not found" }, 404);
+  }
+
+  const campaign: NftCampaign = JSON.parse(campaignData);
+
+  if (campaign.status === "completed") {
+    return c.json({ error: "Campaign already executed" }, 400);
+  }
+
+  // Update status
+  campaign.status = "processing";
+  campaign.updatedAt = Date.now();
+  await c.env.JOBS.put(`nft:${campaignId}`, JSON.stringify(campaign));
+
+  return c.json({
+    campaignId,
+    status: "processing",
+    message: "NFT airdrop queued for execution",
+    recipients: campaign.recipients.length,
+    batches: campaign.batches.length,
+    steps: [
+      "1. Deploy NFT contract with your wallet",
+      "2. Set baseUri to metadata endpoint",
+      "3. Call airdrop() with recipient batches",
+    ],
+    contract: {
+      template: "contracts/nft-airdrop.clar",
+      baseUri: `https://airdrop-cannon.p-d07.workers.dev/nft/metadata/${campaignId}/`,
+    },
+    next: `/nft/campaign/${campaignId}`,
+  });
+});
+
+// Get campaign details
+app.get("/nft/campaign/:id", async (c) => {
+  const campaignId = c.req.param("id");
+  const campaignData = await c.env.JOBS.get(`nft:${campaignId}`);
+
+  if (!campaignData) {
+    return c.json({ error: "Campaign not found" }, 404);
+  }
+
+  const campaign: NftCampaign = JSON.parse(campaignData);
+
+  return c.json({
+    id: campaign.id,
+    name: campaign.name,
+    description: campaign.description,
+    image: campaign.image,
+    status: campaign.status,
+    recipients: campaign.recipients.length,
+    batches: campaign.batches,
+    contractAddress: campaign.contractAddress,
+    metadata: {
+      baseUri: `https://airdrop-cannon.p-d07.workers.dev/nft/metadata/${campaignId}/`,
+      example: `https://airdrop-cannon.p-d07.workers.dev/nft/metadata/${campaignId}/1`,
+    },
+    createdAt: campaign.createdAt,
+    updatedAt: campaign.updatedAt,
+  });
+});
+
+// NFT Metadata endpoint (SIP-016 compatible)
+app.get("/nft/metadata/:campaignId/:tokenId", async (c) => {
+  const campaignId = c.req.param("campaignId");
+  const tokenId = c.req.param("tokenId");
+
+  const campaignData = await c.env.JOBS.get(`nft:${campaignId}`);
+  if (!campaignData) {
+    return c.json({ error: "Campaign not found" }, 404);
+  }
+
+  const campaign: NftCampaign = JSON.parse(campaignData);
+
+  // SIP-016 compliant metadata
+  return c.json({
+    sip: 16,
+    name: `${campaign.name} #${tokenId}`,
+    description: campaign.description,
+    image: campaign.image,
+    attributes: campaign.attributes,
+    properties: {
+      collection: campaign.name,
+      token_id: parseInt(tokenId),
+      campaign_id: campaignId,
+    },
+  });
+});
+
+// ============ GENERAL ENDPOINTS ============
+
 // Stats
 app.get("/stats", async (c) => {
   return c.json({
     totalJobs: 0,
+    totalNftCampaigns: 0,
     totalRecipients: 0,
-    totalDistributed: {
-      stx: "0",
-    },
-    averageBatchSize: MAX_BATCH_SIZE,
     maxBatchSize: MAX_BATCH_SIZE,
-    successRate: "100%",
+    contracts: {
+      stx: "SP3N0NQ47ABAZV68PQSJY7V2H4F2J709ATTESYBRD.send-many-v1",
+      nft: "Deploy per campaign",
+    },
     technical: {
       batchStructure: `${L1_MAX} + ${L2_MAX} + ${L3_MAX} = ${MAX_BATCH_SIZE}`,
       pattern: "Bitcoin Faces fold pattern",
@@ -311,13 +497,14 @@ app.get("/payment-info", (c) => {
     protocol: "x402",
     accepts: ["STX", "sBTC"],
     pricing: {
-      perRecipient: {
-        stx: "0.00001",
-        description: "10 µSTX per recipient",
+      stx: {
+        perRecipient: "10 µSTX",
+        perBatch: "50,000 µSTX",
       },
-      perBatch: {
-        stx: "0.05",
-        description: "~50,000 µSTX tx fee per batch of 14,995",
+      nft: {
+        perRecipient: "100 µSTX",
+        deployFee: "100,000 µSTX",
+        perBatch: "50,000 µSTX",
       },
     },
     facilitator: "https://x402-facilitator.xyz",
