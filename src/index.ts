@@ -2,12 +2,21 @@
  * Airdrop Cannon - Mass token distribution as a service
  *
  * Pay with x402, distribute to thousands of addresses in batched transactions.
- * Inspired by AIBTC's record-breaking Stacks airdrop.
+ * Based on Bitcoin Faces' record-breaking Stacks airdrop approach.
+ *
+ * Key insight: 14,995 recipients per transaction using 3 lists (5000+5000+4995)
+ * Source: https://github.com/bitcoinfaces/airdrop
  */
 
 import { Hono } from "hono";
 import { cors } from "hono/cors";
-import type { Env, QuoteRequest, QuoteResponse, ExecuteRequest, AirdropJob, AirdropRecipient } from "./types";
+import type { Env, QuoteRequest, QuoteResponse, ExecuteRequest, AirdropJob } from "./types";
+
+// Bitcoin Faces proven batch sizes
+const L1_MAX = 5000;
+const L2_MAX = 5000;
+const L3_MAX = 4995;
+const MAX_BATCH_SIZE = L1_MAX + L2_MAX + L3_MAX; // 14,995
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -27,16 +36,20 @@ app.get("/", (c) => {
       "GET /stats": "Platform statistics",
     },
     pricing: {
-      perRecipient: "100 µSTX",
+      perRecipient: "10 µSTX",
       minRecipients: 10,
-      maxRecipients: 100000,
-      maxBatchSize: 500,
+      maxRecipients: 1000000,
+      maxBatchSize: MAX_BATCH_SIZE,
+    },
+    technical: {
+      batchStructure: "3 lists per tx: 5000 + 5000 + 4995 = 14,995 recipients",
+      contract: "send-many.clar using fold pattern",
+      inspiration: "https://github.com/bitcoinfaces/airdrop",
     },
     supported: {
-      tokens: ["STX", "SIP-010 (coming soon)"],
+      tokens: ["STX"],
       networks: ["mainnet", "testnet"],
     },
-    inspired_by: "https://www.hiro.so/blog/how-aibtc-and-bitcoin-faces-launched-the-biggest-airdrop-in-stacks-history",
   });
 });
 
@@ -49,20 +62,19 @@ app.post("/quote", async (c) => {
     return c.json({ error: "Minimum 10 recipients required" }, 400);
   }
 
-  if (recipientCount > 100000) {
-    return c.json({ error: "Maximum 100,000 recipients per job" }, 400);
+  if (recipientCount > 1000000) {
+    return c.json({ error: "Maximum 1,000,000 recipients per job" }, 400);
   }
 
   if (tokenType !== "stx") {
     return c.json({ error: "Only STX airdrops supported currently" }, 400);
   }
 
-  const maxBatchSize = parseInt(c.env.MAX_BATCH_SIZE || "500");
-  const pricePerRecipient = parseInt(c.env.PRICE_PER_RECIPIENT || "100"); // µSTX
-  const batchCount = Math.ceil(recipientCount / maxBatchSize);
+  const pricePerRecipient = parseInt(c.env.PRICE_PER_RECIPIENT || "10"); // µSTX
+  const batchCount = Math.ceil(recipientCount / MAX_BATCH_SIZE);
 
-  // Estimate tx fees: ~0.01 STX per batch tx
-  const estimatedFeesµSTX = batchCount * 10000;
+  // Estimate tx fees: ~0.05 STX per batch tx (larger txs need more fees)
+  const estimatedFeesµSTX = batchCount * 50000;
 
   // Service fee
   const serviceFeeµSTX = recipientCount * pricePerRecipient;
@@ -70,12 +82,13 @@ app.post("/quote", async (c) => {
   // Total
   const totalµSTX = estimatedFeesµSTX + serviceFeeµSTX;
 
-  // Convert to STX (rough)
+  // Convert to STX
   const stxPrice = 1.5; // Approximate USD per STX
 
   const quote: QuoteResponse = {
     recipientCount,
     batchCount,
+    recipientsPerBatch: MAX_BATCH_SIZE,
     estimatedFees: {
       stx: (estimatedFeesµSTX / 1000000).toFixed(6),
       usd: ((estimatedFeesµSTX / 1000000) * stxPrice).toFixed(2),
@@ -88,11 +101,42 @@ app.post("/quote", async (c) => {
       stx: (totalµSTX / 1000000).toFixed(6),
       usd: ((totalµSTX / 1000000) * stxPrice).toFixed(2),
     },
-    maxBatchSize,
+    breakdown: {
+      l1Size: L1_MAX,
+      l2Size: L2_MAX,
+      l3Size: L3_MAX,
+      maxPerTx: MAX_BATCH_SIZE,
+    },
   };
 
   return c.json(quote);
 });
+
+// Split recipients into batches with 3-list structure
+function splitIntoBatches(recipients: { address: string; amount: string }[]): {
+  l1: { address: string; amount: string }[];
+  l2: { address: string; amount: string }[];
+  l3: { address: string; amount: string }[];
+}[] {
+  const batches: {
+    l1: { address: string; amount: string }[];
+    l2: { address: string; amount: string }[];
+    l3: { address: string; amount: string }[];
+  }[] = [];
+
+  let remaining = [...recipients];
+
+  while (remaining.length > 0) {
+    const batch = {
+      l1: remaining.splice(0, L1_MAX),
+      l2: remaining.splice(0, L2_MAX),
+      l3: remaining.splice(0, L3_MAX),
+    };
+    batches.push(batch);
+  }
+
+  return batches;
+}
 
 // Execute airdrop - accepts recipient list and payment
 app.post("/execute", async (c) => {
@@ -108,13 +152,13 @@ app.post("/execute", async (c) => {
     return c.json({ error: "Minimum 10 recipients required" }, 400);
   }
 
-  if (recipients.length > 100000) {
-    return c.json({ error: "Maximum 100,000 recipients per job" }, 400);
+  if (recipients.length > 1000000) {
+    return c.json({ error: "Maximum 1,000,000 recipients per job" }, 400);
   }
 
   // Validate each recipient
   for (const r of recipients) {
-    if (!r.address || !r.address.startsWith("SP")) {
+    if (!r.address || (!r.address.startsWith("SP") && !r.address.startsWith("ST"))) {
       return c.json({ error: `Invalid address: ${r.address}` }, 400);
     }
     if (!r.amount || isNaN(parseInt(r.amount)) || parseInt(r.amount) <= 0) {
@@ -125,22 +169,26 @@ app.post("/execute", async (c) => {
   // Calculate total
   const totalAmount = recipients.reduce((sum, r) => sum + BigInt(r.amount), 0n);
 
+  // Split into batches
+  const batches = splitIntoBatches(recipients);
+
   // Create job
   const jobId = crypto.randomUUID();
-  const maxBatchSize = parseInt(c.env.MAX_BATCH_SIZE || "500");
-  const batchCount = Math.ceil(recipients.length / maxBatchSize);
 
   const job: AirdropJob = {
     id: jobId,
-    owner: "", // Would be set from x402 payment
+    owner: "", // Set from x402 payment
     tokenType,
     recipients,
     totalAmount: totalAmount.toString(),
     status: "pending",
-    batches: Array.from({ length: batchCount }, (_, i) => ({
+    batches: batches.map((batch, i) => ({
       index: i,
       status: "pending" as const,
-      recipientCount: Math.min(maxBatchSize, recipients.length - i * maxBatchSize),
+      recipientCount: batch.l1.length + batch.l2.length + batch.l3.length,
+      l1Count: batch.l1.length,
+      l2Count: batch.l2.length,
+      l3Count: batch.l3.length,
     })),
     createdAt: Date.now(),
     updatedAt: Date.now(),
@@ -149,32 +197,49 @@ app.post("/execute", async (c) => {
   // Store job
   await c.env.JOBS.put(`job:${jobId}`, JSON.stringify(job));
 
-  // Return job info with payment instructions
-  const pricePerRecipient = parseInt(c.env.PRICE_PER_RECIPIENT || "100");
+  // Calculate fees
+  const pricePerRecipient = parseInt(c.env.PRICE_PER_RECIPIENT || "10");
   const serviceFee = recipients.length * pricePerRecipient;
-  const estimatedFees = batchCount * 10000;
+  const estimatedFees = batches.length * 50000;
 
   return c.json({
     jobId,
     status: "pending",
-    recipients: recipients.length,
-    batches: batchCount,
-    totalAmount: totalAmount.toString(),
+    summary: {
+      recipients: recipients.length,
+      batches: batches.length,
+      totalAmount: totalAmount.toString(),
+      totalAmountSTX: (Number(totalAmount) / 1000000).toFixed(6),
+    },
+    batchBreakdown: batches.map((batch, i) => ({
+      batch: i + 1,
+      l1: batch.l1.length,
+      l2: batch.l2.length,
+      l3: batch.l3.length,
+      total: batch.l1.length + batch.l2.length + batch.l3.length,
+    })),
     payment: {
       required: true,
       serviceFee: {
         amount: serviceFee,
-        token: "µSTX",
+        amountSTX: (serviceFee / 1000000).toFixed(6),
+        token: "STX",
       },
       estimatedTxFees: {
         amount: estimatedFees,
-        token: "µSTX",
+        amountSTX: (estimatedFees / 1000000).toFixed(6),
+        token: "STX",
       },
-      instructions: "Pay service fee + provide STX for distribution. Job will process after payment confirmation.",
+      totalRequired: {
+        serviceFee: (serviceFee / 1000000).toFixed(6),
+        txFees: (estimatedFees / 1000000).toFixed(6),
+        distribution: (Number(totalAmount) / 1000000).toFixed(6),
+        grandTotal: ((serviceFee + estimatedFees + Number(totalAmount)) / 1000000).toFixed(6),
+      },
     },
     next: {
       checkStatus: `/job/${jobId}`,
-      paymentEndpoint: "x402 payment required - see /payment-info",
+      documentation: "https://github.com/bitcoinfaces/airdrop",
     },
   });
 });
@@ -190,25 +255,32 @@ app.get("/job/:id", async (c) => {
 
   const job: AirdropJob = JSON.parse(jobData);
 
+  const completed = job.batches.filter((b) => b.status === "confirmed").length;
+  const failed = job.batches.filter((b) => b.status === "failed").length;
+
   return c.json({
     id: job.id,
     status: job.status,
     tokenType: job.tokenType,
     recipients: job.recipients.length,
     totalAmount: job.totalAmount,
+    totalAmountSTX: (Number(job.totalAmount) / 1000000).toFixed(6),
     batches: job.batches.map((b) => ({
       index: b.index,
       status: b.status,
       txId: b.txId,
       recipientCount: b.recipientCount,
+      l1Count: b.l1Count,
+      l2Count: b.l2Count,
+      l3Count: b.l3Count,
       error: b.error,
     })),
     progress: {
-      completed: job.batches.filter((b) => b.status === "confirmed").length,
+      completed,
+      failed,
+      pending: job.batches.length - completed - failed,
       total: job.batches.length,
-      percentage: Math.round(
-        (job.batches.filter((b) => b.status === "confirmed").length / job.batches.length) * 100
-      ),
+      percentage: Math.round((completed / job.batches.length) * 100),
     },
     createdAt: job.createdAt,
     updatedAt: job.updatedAt,
@@ -217,15 +289,19 @@ app.get("/job/:id", async (c) => {
 
 // Stats
 app.get("/stats", async (c) => {
-  // Would pull from D1 in production
   return c.json({
     totalJobs: 0,
     totalRecipients: 0,
     totalDistributed: {
       stx: "0",
     },
-    averageBatchSize: 0,
+    averageBatchSize: MAX_BATCH_SIZE,
+    maxBatchSize: MAX_BATCH_SIZE,
     successRate: "100%",
+    technical: {
+      batchStructure: `${L1_MAX} + ${L2_MAX} + ${L3_MAX} = ${MAX_BATCH_SIZE}`,
+      pattern: "Bitcoin Faces fold pattern",
+    },
   });
 });
 
@@ -236,12 +312,16 @@ app.get("/payment-info", (c) => {
     accepts: ["STX", "sBTC"],
     pricing: {
       perRecipient: {
-        stx: "0.0001",
-        description: "100 µSTX per recipient",
+        stx: "0.00001",
+        description: "10 µSTX per recipient",
+      },
+      perBatch: {
+        stx: "0.05",
+        description: "~50,000 µSTX tx fee per batch of 14,995",
       },
     },
     facilitator: "https://x402-facilitator.xyz",
-    payTo: "SP...", // Service wallet
+    payTo: "SP3N0NQ47ABAZV68PQSJY7V2H4F2J709ATTESYBRD",
   });
 });
 

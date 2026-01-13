@@ -31,6 +31,9 @@ export interface BatchStatus {
   txId?: string;
   status: "pending" | "broadcast" | "confirmed" | "failed";
   recipientCount: number;
+  l1Count?: number;
+  l2Count?: number;
+  l3Count?: number;
   error?: string;
 }
 
@@ -43,6 +46,7 @@ export interface QuoteRequest {
 export interface QuoteResponse {
   recipientCount: number;
   batchCount: number;
+  recipientsPerBatch: number;
   estimatedFees: {
     stx: string;
     usd: string;
@@ -55,7 +59,12 @@ export interface QuoteResponse {
     stx: string;
     usd: string;
   };
-  maxBatchSize: number;
+  breakdown: {
+    l1Size: number;
+    l2Size: number;
+    l3Size: number;
+    maxPerTx: number;
+  };
 }
 
 export interface ExecuteRequest {
@@ -63,4 +72,11 @@ export interface ExecuteRequest {
   tokenContract?: string;
   recipients: AirdropRecipient[];
   memo?: string;
+}
+
+// Bitcoin Faces batch structure
+export interface AirdropBatch {
+  l1: AirdropRecipient[];
+  l2: AirdropRecipient[];
+  l3: AirdropRecipient[];
 }

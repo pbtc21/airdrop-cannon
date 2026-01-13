@@ -6,8 +6,8 @@ workers_dev = true
 
 [vars]
 NETWORK = "mainnet"
-MAX_BATCH_SIZE = "500"
-PRICE_PER_RECIPIENT = "100"
+MAX_BATCH_SIZE = "14995"
+PRICE_PER_RECIPIENT = "10"
 
 [[d1_databases]]
 binding = "DB"
