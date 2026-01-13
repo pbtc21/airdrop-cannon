@@ -1,0 +1,19 @@
+name = "airdrop-cannon"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+compatibility_flags = ["nodejs_compat_v2"]
+workers_dev = true
+
+[vars]
+NETWORK = "mainnet"
+MAX_BATCH_SIZE = "500"
+PRICE_PER_RECIPIENT = "100"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "airdrop-cannon"
+database_id = "56418cb7-66c0-4032-b5d4-575dea88aa45"
+
+[[kv_namespaces]]
+binding = "JOBS"
+id = "d9abb2d77aac43939b99727e55edc427"
