@@ -508,7 +508,7 @@ app.get("/payment-info", (c) => {
       },
     },
     facilitator: "https://x402-facilitator.xyz",
-    payTo: "SP3N0NQ47ABAZV68PQSJY7V2H4F2J709ATTESYBRD",
+    payTo: "SPKH9AWG0ENZ87J1X0PBD4HETP22G8W22AFNVF8K",
   });
 });
 
