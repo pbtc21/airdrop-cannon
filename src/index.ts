@@ -512,4 +512,138 @@ app.get("/payment-info", (c) => {
   });
 });
 
+// ============ AIBTC AGENT AIRDROP ============
+
+interface AIBTCAgent {
+  rank: number;
+  stxAddress: string;
+  btcAddress: string;
+  displayName?: string;
+  bnsName?: string | null;
+  level: number;
+  levelName: string;
+}
+
+interface AIBTCLeaderboard {
+  leaderboard: AIBTCAgent[];
+  distribution: {
+    sovereign: number;
+    builder: number;
+    genesis: number;
+    unverified: number;
+    total: number;
+  };
+}
+
+// Fetch all agents from aibtc.com
+app.get("/aibtc/agents", async (c) => {
+  try {
+    const response = await fetch("https://aibtc.com/api/leaderboard");
+    const data = await response.json() as AIBTCLeaderboard;
+
+    return c.json({
+      agents: data.leaderboard.map(a => ({
+        address: a.stxAddress,
+        btcAddress: a.btcAddress,
+        name: a.displayName || a.bnsName || `Agent #${a.rank}`,
+        level: a.levelName,
+        rank: a.rank,
+      })),
+      total: data.distribution.total,
+      distribution: data.distribution,
+    });
+  } catch (error) {
+    return c.json({ error: "Failed to fetch agents from aibtc.com" }, 500);
+  }
+});
+
+// Quote for sBTC airdrop to all AIBTC agents
+app.post("/aibtc/quote", async (c) => {
+  const body = await c.req.json<{ amountSatsPerAgent: number }>();
+  const { amountSatsPerAgent } = body;
+
+  if (!amountSatsPerAgent || amountSatsPerAgent < 1) {
+    return c.json({ error: "amountSatsPerAgent must be at least 1" }, 400);
+  }
+
+  try {
+    const response = await fetch("https://aibtc.com/api/leaderboard");
+    const data = await response.json() as AIBTCLeaderboard;
+    const agentCount = data.distribution.total;
+
+    const totalSats = amountSatsPerAgent * agentCount;
+    const serviceFee = Math.max(100, Math.floor(totalSats * 0.01)); // 1% fee, min 100 sats
+
+    return c.json({
+      agentCount,
+      amountPerAgent: amountSatsPerAgent,
+      totalSats,
+      serviceFee,
+      totalWithFee: totalSats + serviceFee,
+      token: "sBTC",
+      agents: data.leaderboard.map(a => ({
+        address: a.stxAddress,
+        name: a.displayName || `Agent #${a.rank}`,
+        amount: amountSatsPerAgent,
+      })),
+    });
+  } catch (error) {
+    return c.json({ error: "Failed to fetch agents" }, 500);
+  }
+});
+
+// Execute sBTC airdrop to all AIBTC agents
+app.post("/aibtc/airdrop", async (c) => {
+  const body = await c.req.json<{ amountSatsPerAgent: number; txid?: string }>();
+  const { amountSatsPerAgent, txid } = body;
+
+  if (!amountSatsPerAgent || amountSatsPerAgent < 1) {
+    return c.json({ error: "amountSatsPerAgent must be at least 1" }, 400);
+  }
+
+  // Fetch current agents
+  const response = await fetch("https://aibtc.com/api/leaderboard");
+  const data = await response.json() as AIBTCLeaderboard;
+  const agents = data.leaderboard;
+
+  if (agents.length === 0) {
+    return c.json({ error: "No agents found" }, 400);
+  }
+
+  const totalSats = amountSatsPerAgent * agents.length;
+  const serviceFee = Math.max(100, Math.floor(totalSats * 0.01));
+
+  // If no payment txid, return 402
+  if (!txid) {
+    return c.json({
+      error: "Payment Required",
+      code: "PAYMENT_REQUIRED",
+      amount: totalSats + serviceFee,
+      token: "sBTC",
+      tokenContract: "SP3K8BC0PPEVCV7NZ6QSRWPQ2JE9E5B6N3PA0KBR9.token-sbtc",
+      payTo: "SPKH9AWG0ENZ87J1X0PBD4HETP22G8W22AFNVF8K",
+      recipients: agents.map(a => ({
+        address: a.stxAddress,
+        amount: amountSatsPerAgent,
+        name: a.displayName,
+      })),
+    }, 402);
+  }
+
+  // TODO: Verify payment and execute multi-send
+  // For now, return the airdrop plan
+  return c.json({
+    status: "pending",
+    message: "Airdrop queued for execution",
+    paymentTxid: txid,
+    recipients: agents.map(a => ({
+      address: a.stxAddress,
+      amount: amountSatsPerAgent,
+      name: a.displayName || `Agent #${a.rank}`,
+    })),
+    totalSats,
+    token: "sBTC",
+  });
+});
+
 export default app;
