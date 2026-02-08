@@ -512,6 +512,190 @@ app.get("/payment-info", (c) => {
   });
 });
 
+// ============ X402 DISCOVERY ENDPOINTS ============
+
+const PAY_TO_ADDRESS = "SPKH9AWG0ENZ87J1X0PBD4HETP22G8W22AFNVF8K";
+
+// x402 discovery for STX execute endpoint
+app.get("/execute", (c) => {
+  return c.json({
+    x402Version: 1,
+    name: "Airdrop Cannon",
+    accepts: [{
+      scheme: "exact",
+      network: "stacks",
+      maxAmountRequired: "1000000", // 1 STX max for typical airdrop
+      resource: "/execute",
+      description: "Execute STX airdrop to thousands of addresses using optimized batch transactions",
+      mimeType: "application/json",
+      payTo: PAY_TO_ADDRESS,
+      maxTimeoutSeconds: 600,
+      asset: "STX",
+      outputSchema: {
+        input: {
+          type: "object",
+          properties: {
+            tokenType: { type: "string", enum: ["stx"] },
+            recipients: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  address: { type: "string", description: "Stacks address (SP... or ST...)" },
+                  amount: { type: "string", description: "Amount in µSTX" }
+                },
+                required: ["address", "amount"]
+              },
+              minItems: 10,
+              maxItems: 1000000
+            }
+          },
+          required: ["tokenType", "recipients"]
+        },
+        output: {
+          type: "object",
+          properties: {
+            jobId: { type: "string" },
+            status: { type: "string" },
+            summary: { type: "object" },
+            payment: { type: "object" }
+          }
+        }
+      }
+    }]
+  });
+});
+
+// x402 discovery for NFT create endpoint
+app.get("/nft/create", (c) => {
+  return c.json({
+    x402Version: 1,
+    name: "Airdrop Cannon",
+    accepts: [{
+      scheme: "exact",
+      network: "stacks",
+      maxAmountRequired: "500000", // 0.5 STX for campaign creation
+      resource: "/nft/create",
+      description: "Create NFT airdrop campaign with metadata hosting",
+      mimeType: "application/json",
+      payTo: PAY_TO_ADDRESS,
+      maxTimeoutSeconds: 600,
+      asset: "STX",
+      outputSchema: {
+        input: {
+          type: "object",
+          properties: {
+            name: { type: "string", description: "NFT collection name" },
+            description: { type: "string", description: "Collection description" },
+            image: { type: "string", description: "URL to the image" },
+            recipients: {
+              type: "array",
+              items: { type: "string", description: "Stacks address" },
+              minItems: 10,
+              maxItems: 1000000
+            },
+            attributes: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  trait_type: { type: "string" },
+                  value: { type: "string" }
+                }
+              }
+            }
+          },
+          required: ["name", "description", "image", "recipients"]
+        },
+        output: {
+          type: "object",
+          properties: {
+            campaignId: { type: "string" },
+            status: { type: "string" },
+            metadata: { type: "object" },
+            pricing: { type: "object" }
+          }
+        }
+      }
+    }]
+  });
+});
+
+// x402 discovery for NFT execute endpoint
+app.get("/nft/execute", (c) => {
+  return c.json({
+    x402Version: 1,
+    name: "Airdrop Cannon",
+    accepts: [{
+      scheme: "exact",
+      network: "stacks",
+      maxAmountRequired: "2000000", // 2 STX for NFT airdrop execution
+      resource: "/nft/execute",
+      description: "Execute NFT airdrop for an existing campaign",
+      mimeType: "application/json",
+      payTo: PAY_TO_ADDRESS,
+      maxTimeoutSeconds: 600,
+      asset: "STX",
+      outputSchema: {
+        input: {
+          type: "object",
+          properties: {
+            campaignId: { type: "string", description: "Campaign ID from /nft/create" }
+          },
+          required: ["campaignId"]
+        },
+        output: {
+          type: "object",
+          properties: {
+            campaignId: { type: "string" },
+            status: { type: "string" },
+            message: { type: "string" },
+            steps: { type: "array" }
+          }
+        }
+      }
+    }]
+  });
+});
+
+// x402 discovery for AIBTC airdrop endpoint
+app.get("/aibtc/airdrop", (c) => {
+  return c.json({
+    x402Version: 1,
+    name: "Airdrop Cannon",
+    accepts: [{
+      scheme: "exact",
+      network: "stacks",
+      maxAmountRequired: "10000000", // 10 STX max for AIBTC airdrop
+      resource: "/aibtc/airdrop",
+      description: "Airdrop sBTC to all AIBTC community agents",
+      mimeType: "application/json",
+      payTo: PAY_TO_ADDRESS,
+      maxTimeoutSeconds: 600,
+      asset: "sBTC",
+      outputSchema: {
+        input: {
+          type: "object",
+          properties: {
+            amountSatsPerAgent: { type: "number", description: "Satoshis to send per agent", minimum: 1 },
+            txid: { type: "string", description: "Payment transaction ID (optional)" }
+          },
+          required: ["amountSatsPerAgent"]
+        },
+        output: {
+          type: "object",
+          properties: {
+            status: { type: "string" },
+            paymentTxid: { type: "string" },
+            recipients: { type: "array" },
+            totalSats: { type: "number" }
+          }
+        }
+      }
+    }]
+  });
+});
+
 // ============ AIBTC AGENT AIRDROP ============
 
 interface AIBTCAgent {
