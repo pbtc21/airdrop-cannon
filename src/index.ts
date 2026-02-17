@@ -9,6 +9,7 @@
  */
 
 import { Hono } from "hono";
+import type { Context, Next } from "hono";
 import { cors } from "hono/cors";
 import type { Env, QuoteRequest, QuoteResponse, ExecuteRequest, AirdropJob, NftCampaign } from "./types";
 
@@ -18,9 +19,152 @@ const L2_MAX = 5000;
 const L3_MAX = 4995;
 const MAX_BATCH_SIZE = L1_MAX + L2_MAX + L3_MAX; // 14,995
 
-const app = new Hono<{ Bindings: Env }>();
+const FACILITATOR_URL = "https://facilitator.x402stacks.xyz";
+
+const X402_ROUTES: Record<string, {
+  maxAmountRequired: string;
+  asset: string;
+  description: string;
+}> = {
+  "POST /execute": {
+    maxAmountRequired: "1000000",
+    asset: "STX",
+    description: "Execute STX airdrop",
+  },
+  "POST /nft/create": {
+    maxAmountRequired: "500000",
+    asset: "STX",
+    description: "Create NFT airdrop campaign",
+  },
+};
+
+async function x402Middleware(c: Context, next: Next) {
+  const routeKey = `${c.req.method} ${new URL(c.req.url).pathname}`;
+  const routeConfig = X402_ROUTES[routeKey];
+
+  if (!routeConfig) {
+    return next();
+  }
+
+  const paymentHeader = c.req.header("X-Payment") || c.req.header("payment-signature");
+
+  if (!paymentHeader) {
+    return c.json({
+      x402Version: 1,
+      error: "Payment Required",
+      accepts: [{
+        scheme: "exact",
+        network: "stacks:1",
+        maxAmountRequired: routeConfig.maxAmountRequired,
+        asset: routeConfig.asset,
+        resource: new URL(c.req.url).pathname,
+        payTo: "SPKH9AWG0ENZ87J1X0PBD4HETP22G8W22AFNVF8K",
+        maxTimeoutSeconds: 600,
+        description: routeConfig.description,
+        mimeType: "application/json",
+      }],
+    }, 402);
+  }
+
+  try {
+    const facilitatorRes = await fetch(`${FACILITATOR_URL}/api/v1/verify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        tx_id: paymentHeader,
+        expected_recipient: "SPKH9AWG0ENZ87J1X0PBD4HETP22G8W22AFNVF8K",
+        min_amount: parseInt(routeConfig.maxAmountRequired),
+        network: "mainnet",
+        token_type: routeConfig.asset === "sBTC" ? "SBTC" : "STX",
+      }),
+    });
+
+    const verification = await facilitatorRes.json() as {
+      valid: boolean;
+      tx_id?: string;
+      sender_address?: string;
+      errors?: string[];
+      error?: string;
+    };
+
+    if (!verification.valid) {
+      return c.json({
+        error: "Invalid Payment",
+        code: "PAYMENT_INVALID",
+        details: verification.errors?.join(", ") || verification.error || "Payment verification failed",
+      }, 402);
+    }
+
+    c.set("paymentTxId", verification.tx_id || paymentHeader);
+    c.set("paymentSender", verification.sender_address || "");
+
+    await next();
+  } catch (error) {
+    return c.json({
+      error: "Payment Verification Error",
+      code: "FACILITATOR_ERROR",
+      details: error instanceof Error ? error.message : "Failed to verify payment",
+    }, 500);
+  }
+}
+
+const app = new Hono<{
+  Bindings: Env;
+  Variables: {
+    paymentTxId: string;
+    paymentSender: string;
+  };
+}>();
 
 app.use("*", cors());
+app.use("*", x402Middleware);
+
+// Consolidated x402 discovery document
+app.get("/.well-known/x402.json", (c) => {
+  return c.json({
+    x402Version: 1,
+    name: "Airdrop Cannon",
+    facilitator: FACILITATOR_URL,
+    endpoints: [
+      {
+        resource: "/execute",
+        method: "POST",
+        scheme: "exact",
+        network: "stacks:1",
+        maxAmountRequired: "1000000",
+        asset: "STX",
+        payTo: "SPKH9AWG0ENZ87J1X0PBD4HETP22G8W22AFNVF8K",
+        maxTimeoutSeconds: 600,
+        description: "Execute STX airdrop to thousands of addresses using optimized batch transactions",
+        mimeType: "application/json",
+      },
+      {
+        resource: "/nft/create",
+        method: "POST",
+        scheme: "exact",
+        network: "stacks:1",
+        maxAmountRequired: "500000",
+        asset: "STX",
+        payTo: "SPKH9AWG0ENZ87J1X0PBD4HETP22G8W22AFNVF8K",
+        maxTimeoutSeconds: 600,
+        description: "Create NFT airdrop campaign with metadata hosting",
+        mimeType: "application/json",
+      },
+      {
+        resource: "/nft/execute",
+        method: "POST",
+        scheme: "exact",
+        network: "stacks:1",
+        maxAmountRequired: "2000000",
+        asset: "STX",
+        payTo: "SPKH9AWG0ENZ87J1X0PBD4HETP22G8W22AFNVF8K",
+        maxTimeoutSeconds: 600,
+        description: "Execute NFT airdrop for an existing campaign",
+        mimeType: "application/json",
+      },
+    ],
+  });
+});
 
 // Health check / API info
 app.get("/", (c) => {
