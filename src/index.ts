@@ -18,6 +18,69 @@ const L2_MAX = 5000;
 const L3_MAX = 4995;
 const MAX_BATCH_SIZE = L1_MAX + L2_MAX + L3_MAX; // 14,995
 
+const SBTC_CONTRACT = "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token";
+const HIRO_API = "https://api.hiro.so";
+
+interface TxVerificationResult {
+  valid: boolean;
+  error?: string;
+  senderAddress?: string;
+  amount?: bigint;
+}
+
+async function verifySbtcPayment(
+  txid: string,
+  expectedRecipient: string,
+  minAmount: bigint
+): Promise<TxVerificationResult> {
+  try {
+    const normalizedTxid = txid.startsWith("0x") ? txid : `0x${txid}`;
+    const res = await fetch(`${HIRO_API}/extended/v1/tx/${normalizedTxid}`);
+
+    if (!res.ok) {
+      return { valid: false, error: `Transaction not found: ${txid}` };
+    }
+
+    const tx = await res.json() as any;
+
+    if (tx.tx_status !== "success") {
+      return { valid: false, error: `Transaction not successful: ${tx.tx_status}` };
+    }
+
+    if (tx.tx_type !== "contract_call") {
+      return { valid: false, error: "Not a contract call transaction" };
+    }
+
+    if (tx.contract_call.function_name !== "transfer") {
+      return { valid: false, error: "Not a transfer function call" };
+    }
+
+    if (tx.contract_call.contract_id.toLowerCase() !== SBTC_CONTRACT.toLowerCase()) {
+      return { valid: false, error: `Wrong contract: expected ${SBTC_CONTRACT}, got ${tx.contract_call.contract_id}` };
+    }
+
+    const args = tx.contract_call.function_args;
+    if (!args || args.length < 3) {
+      return { valid: false, error: "Invalid transfer arguments" };
+    }
+
+    const txAmount = BigInt(args[0].repr.replace("u", ""));
+    const txRecipient = args[2].repr.replace(/'/g, "");
+
+    if (txRecipient !== expectedRecipient) {
+      return { valid: false, error: `Recipient mismatch: expected ${expectedRecipient}, got ${txRecipient}` };
+    }
+
+    if (txAmount < minAmount) {
+      return { valid: false, error: `Insufficient amount: got ${txAmount}, need ${minAmount}` };
+    }
+
+    return { valid: true, senderAddress: tx.sender_address, amount: txAmount };
+  } catch (error) {
+    return { valid: false, error: error instanceof Error ? error.message : "Verification failed" };
+  }
+}
+
 const app = new Hono<{ Bindings: Env }>();
 
 app.use("*", cors());
@@ -804,7 +867,7 @@ app.post("/aibtc/airdrop", async (c) => {
       code: "PAYMENT_REQUIRED",
       amount: totalSats + serviceFee,
       token: "sBTC",
-      tokenContract: "SP3K8BC0PPEVCV7NZ6QSRWPQ2JE9E5B6N3PA0KBR9.token-sbtc",
+      tokenContract: SBTC_CONTRACT,
       payTo: "SPKH9AWG0ENZ87J1X0PBD4HETP22G8W22AFNVF8K",
       recipients: agents.map(a => ({
         address: a.stxAddress,
@@ -814,19 +877,68 @@ app.post("/aibtc/airdrop", async (c) => {
     }, 402);
   }
 
-  // TODO: Verify payment and execute multi-send
-  // For now, return the airdrop plan
-  return c.json({
+  // Verify the sBTC payment transaction
+  const requiredAmount = BigInt(totalSats + serviceFee);
+  const verification = await verifySbtcPayment(txid, PAY_TO_ADDRESS, requiredAmount);
+
+  if (!verification.valid) {
+    return c.json({
+      error: "Payment Verification Failed",
+      code: "INVALID_PAYMENT",
+      details: verification.error,
+      txid,
+      requiredAmount: requiredAmount.toString(),
+      token: "sBTC",
+      tokenContract: SBTC_CONTRACT,
+      payTo: PAY_TO_ADDRESS,
+    }, 402);
+  }
+
+  // Payment verified — create airdrop job
+  const batches = splitIntoBatches(
+    agents.map(a => ({ address: a.stxAddress, amount: String(amountSatsPerAgent) }))
+  );
+  const jobId = crypto.randomUUID();
+
+  const job: AirdropJob = {
+    id: jobId,
+    owner: verification.senderAddress || "",
+    tokenType: "sip010",
+    tokenContract: SBTC_CONTRACT,
+    recipients: agents.map(a => ({ address: a.stxAddress, amount: String(amountSatsPerAgent) })),
+    totalAmount: totalSats.toString(),
     status: "pending",
-    message: "Airdrop queued for execution",
+    batches: batches.map((batch, i) => ({
+      index: i,
+      status: "pending" as const,
+      recipientCount: batch.l1.length + batch.l2.length + batch.l3.length,
+      l1Count: batch.l1.length,
+      l2Count: batch.l2.length,
+      l3Count: batch.l3.length,
+    })),
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    paymentTxId: txid,
+  };
+
+  await c.env.JOBS.put(`job:${jobId}`, JSON.stringify(job));
+
+  return c.json({
+    status: "verified",
+    message: "Payment verified. Airdrop queued for execution.",
+    jobId,
     paymentTxid: txid,
+    paymentVerified: true,
+    sender: verification.senderAddress,
     recipients: agents.map(a => ({
       address: a.stxAddress,
       amount: amountSatsPerAgent,
       name: a.displayName || `Agent #${a.rank}`,
     })),
     totalSats,
+    serviceFee,
     token: "sBTC",
+    next: `/job/${jobId}`,
   });
 });
 
